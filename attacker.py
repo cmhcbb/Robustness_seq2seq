@@ -6,7 +6,7 @@ import codecs
 import os
 import math
 import copy
-
+import numpy as np
 import torch
 
 from itertools import count
@@ -18,6 +18,7 @@ import onmt.inputters as inputters
 import onmt.opts as opts
 import onmt.decoders.ensemble
 
+from word_counter import word_frequency
 
 def build_translator(opt, report_score=True, logger=None, out_file=None):
     if out_file is None:
@@ -219,6 +220,7 @@ class Translator(object):
         all_scores = []
         all_predictions = []
 
+
         for batch in data_iter:
             batch_data = self.translate_batch(batch, data, fast=self.fast)
             translations = builder.from_batch(batch_data)
@@ -319,7 +321,7 @@ class Translator(object):
             tgt_in, memory_bank, memory_lengths=src_lengths)
         #print(batch.tgt[1:].data)
         keyword = batch.tgt[1].data
-        tgt_pad = self.fields["tgt"].vocab.stoi[inputters.PAD_WORD]
+        
         for dec in dec_out:
             #print(keyword)
             out = self.model.generator.forward(dec)         #might be useful
@@ -332,7 +334,7 @@ class Translator(object):
             score = torch.max(out.data) - out.data[0][keyword.item()]
             gold_score = min(score, gold_score)        
         #print(gold_score)
-        return gold_score
+        return gold_score.item()
 
 
     def attack(self,
@@ -413,10 +415,19 @@ class Translator(object):
         vocab = self.fields["src"].vocab
         #print(len(vocab))
 
+        src_pad = self.fields["src"].vocab.stoi[inputters.PAD_WORD]
+        #print("pad:",src_pad)
+        top = word_frequency(300)
+        top_words = [i[0] for i in top]
+        top_indexs = []
+        for word in top_words:
+          top_indexs.append(self.fields["src"].vocab.stoi[word])
+        #print(top_indexs)
+
         for batch in data_iter:
             _, src = self.translate_batch(batch, data, fast=self.fast)
             inpt = src
-            for iter_idx in range(iterations):
+            for iter_idx in range(10):
               
               #output = batch_data["predictions"][0][0]
               #print(output)
@@ -431,23 +442,36 @@ class Translator(object):
               print(iter_idx,t_loss)
               for emb_idx in range(0,src.size()[0]):                   
                   min_loss = t_loss
-                  for candi in range(1,len(vocab)):
-                      temp_inpt = src.clone()
-                      temp_inpt[emb_idx][0][0]=candi
-                      loss = self.get_loss(batch,data, inpt_src=temp_inpt)
-                      if loss<min_loss:
-                          min_loss = loss
-                          min_inpt = temp_inpt.clone()
+                  #for candi in range(1,len(vocab)):
+                      
+                  temp_inpt = inpt.clone()
+                  temp_inpt[emb_idx][0][0]=src_pad
+                  loss = self.get_loss(batch, data, inpt_src=temp_inpt)
+                  if loss<min_loss:
+                      min_loss = loss
+                      min_inpt = temp_inpt.clone()
+                      min_idx = emb_idx
                           #print(min_loss)
-                          
-                  min_loss_a.append(min_loss)
-                  min_inpt_a.append(min_inpt)
-
-              if len(min_loss_a)!=0:
-                  min_idx_in_a = np.argmin(min_loss_a)
-                  inpt = min_inpt_a[min_idx_in_a].clone()
-                  print(min_loss_a)
-                  print(inpt)
+              print(min_idx)
+              for index in top_indexs:            
+                  #min_loss_a.append(min_loss)
+                  #min_inpt_a.append(min_inpt)
+                  temp_inpt = inpt.clone()
+                  temp_inpt[min_idx][0][0]=index
+                  loss = self.get_loss(batch, data, inpt_src=temp_inpt)
+                  if loss<min_loss:
+                      min_loss = loss
+                      min_inpt = temp_inpt.clone()
+                     
+              #print(min_loss, min_inpt)
+              inpt = min_inpt
+              #print(inpt)
+              #if len(min_loss_a)!=0:
+                  #min_idx_in_a = np.argmin(min_loss_a)
+                  #print(len(min_inpt_a), min_inpt_a)
+                  #inpt = min_inpt_a[min_idx_in_a].clone()
+                  #print(min_loss_a)
+                  #print(inpt)
                   #print(loss)
 
 

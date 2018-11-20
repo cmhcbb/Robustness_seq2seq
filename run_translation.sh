@@ -1,1 +1,1 @@
-CUDA_VISBLE_DEVICES=0 python translate.py -gpu 0 -model pretrained/averaged-10-epoch.pt -src data/wmt/test.en -tgt data/wmt/test.de  -replace_unk -verbose
+CUDA_VISIBLE_DEVICES=2 python translate.py -gpu 1 -model pretrained/averaged-10-epoch.pt -src data/wmt/newstest2017-ende-src.en -tgt data/wmt/newstest2017-ende-ref.de  -replace_unk -verbose -output transformerres
