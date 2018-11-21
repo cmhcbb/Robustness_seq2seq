@@ -312,29 +312,39 @@ class Translator(object):
         enc_states, memory_bank, src_lengths \
             = self.model.encoder(inpt_src, src_lengths)
         self.model.decoder.init_state(inpt_src, memory_bank, enc_states)
-        
-        tgt_in = inputters.make_features(batch, 'tgt')[:-1]   # need to be related with keyword
-        tt = torch.cuda if self.cuda else torch
+        keyword = batch.tgt[1].data
+        #tgt_in = inputters.make_features(batch, 'tgt')[:-1]   # need to be related with keyword
+        #tt = torch.cuda if self.cuda else torch
         #gold_scores = tt.FloatTensor(batch.batch_size).fill_(0)
         gold_score = 10000
-        dec_out, _ = self.model.decoder(
-            tgt_in, memory_bank, memory_lengths=src_lengths)
+        vocab = self.fields["tgt"].vocab
+        inp = torch.LongTensor([vocab.stoi[inputters.BOS_WORD]]).cuda()
+        inp = inp.view(1,-1)
+        inp = inp.unsqueeze(2)
+        for i in range(self.max_length):
+            #print(inp)
+            dec_out, _ = self.model.decoder(
+                inp, memory_bank, memory_lengths=src_lengths, step=i)
         #print(batch.tgt[1:].data)
-        keyword = batch.tgt[1].data
         
-        for dec in dec_out:
+        #print(keyword)
+        #print(dec_out)
             #print(keyword)
-            out = self.model.generator.forward(dec)         #might be useful
+            out = self.model.generator.forward(dec_out).data 
             #print("max_out",torch.max(out.data))
             #print("keyword_out",out.data[0][keyword.item()])
-
-            tgt = keyword.unsqueeze(1)
             #scores = out.data.gather(1, tgt)              # need to change 
             #scores.masked_fill_(tgt.eq(tgt_pad), 0)
-            score = torch.max(out.data) - out.data[0][keyword.item()]
+            _,inp = torch.max(out,2)
+            if inp.item() == vocab.stoi[inputters.EOS_WORD]:
+                break
+            inp = inp.unsqueeze(2)
+            key_value = out.data[0][0][keyword.item()].item()
+            out.data[0][0][keyword.item()] = -100000
+            score = torch.max(out.data).item() - key_value + 0.01
             gold_score = min(score, gold_score)        
         #print(gold_score)
-        return gold_score.item()
+        return gold_score
 
 
     def attack(self,
@@ -427,44 +437,56 @@ class Translator(object):
         for batch in data_iter:
             _, src = self.translate_batch(batch, data, fast=self.fast)
             inpt = src
+
+            mask = []
             for iter_idx in range(10):
               
               #output = batch_data["predictions"][0][0]
               #print(output)
             #mask= [0] * (inpt_emb.size()[0]-1)
                 # projection
-              min_inpt = None
-              #temp_inpt = inpt.clone()
-              min_loss_a = []
-              min_inpt_a = []
+                min_inpt = None
+                #temp_inpt = inpt.clone()
+                min_loss_a = []
+                min_inpt_a = []
 
-              t_loss = self.get_loss(batch,data, inpt_src=inpt)
-              print(iter_idx,t_loss)
-              for emb_idx in range(0,src.size()[0]):                   
-                  min_loss = t_loss
-                  #for candi in range(1,len(vocab)):
-                      
-                  temp_inpt = inpt.clone()
-                  temp_inpt[emb_idx][0][0]=src_pad
-                  loss = self.get_loss(batch, data, inpt_src=temp_inpt)
-                  if loss<min_loss:
-                      min_loss = loss
-                      min_inpt = temp_inpt.clone()
-                      min_idx = emb_idx
-                          #print(min_loss)
-              print(min_idx)
-              for index in top_indexs:            
-                  #min_loss_a.append(min_loss)
-                  #min_inpt_a.append(min_inpt)
-                  temp_inpt = inpt.clone()
-                  temp_inpt[min_idx][0][0]=index
-                  loss = self.get_loss(batch, data, inpt_src=temp_inpt)
-                  if loss<min_loss:
-                      min_loss = loss
-                      min_inpt = temp_inpt.clone()
-                     
-              #print(min_loss, min_inpt)
-              inpt = min_inpt
+                t_loss = self.get_loss(batch, data, inpt_src=inpt)
+                print(iter_idx,t_loss)
+                if t_loss<0.0:
+                    break
+                min_loss = 100
+                for emb_idx in range(0,src.size()[0]):                   
+                    if emb_idx in mask:
+                        continue
+                    
+                    #for candi in range(1,len(vocab)):
+                    #print(emb_idx)
+                    temp_inpt = inpt.clone()
+                    temp_inpt[emb_idx][0][0]=src_pad
+                    loss = self.get_loss(batch, data, inpt_src=temp_inpt)
+                    #print(loss)
+                    if loss<min_loss:
+                        min_loss = loss
+                        min_inpt = temp_inpt.clone()
+                        min_idx = emb_idx
+                            #print(min_loss)
+                #print(min_idx, mask)
+                for index in top_indexs:            
+                    #min_loss_a.append(min_loss)
+                    #min_inpt_a.append(min_inpt)
+                    temp_inpt = inpt.clone()
+                    temp_inpt[min_idx][0][0]=index
+                    loss = self.get_loss(batch, data, inpt_src=temp_inpt)
+                    if loss<min_loss:
+                        min_loss = loss
+                        min_inpt = temp_inpt.clone()
+                       
+                #print(min_loss, min_inpt)
+                if min_inpt is None:
+                    mask.append(min_idx)
+                else:  
+                    inpt = min_inpt
+                    mask = []
               #print(inpt)
               #if len(min_loss_a)!=0:
                   #min_idx_in_a = np.argmin(min_loss_a)
@@ -478,6 +500,8 @@ class Translator(object):
             print("attack finished")              
               #print(src, src.size())
 
+            #print(inpt)
+            batch_data, src = self.translate_batch(batch, data, fast=self.fast, inpt_src=inpt, attack=True)  
             translations = builder.from_batch(batch_data)
             print("words as follows")
             for trans in translations:
@@ -526,7 +550,7 @@ class Translator(object):
             src = inputters.make_features(batch, 'src', data_type)
         else:
             src = inpt_src
-        print(src.size())
+        #print(src)
         src_lengths = None
         if data_type == 'text':
             _, src_lengths = batch.src
@@ -801,7 +825,7 @@ class Translator(object):
             # Get all the pending current beam words and arrange for forward.
             inp = var(torch.stack([b.get_current_state() for b in beam])
                       .t().contiguous().view(1, -1))
-
+            #print(inp)
             # Turn any copied words to UNKs
             # 0 is unk
             if self.copy_attn:
@@ -811,7 +835,7 @@ class Translator(object):
             # Temporary kludge solution to handle changed dim expectation
             # in the decoder
             inp = inp.unsqueeze(2)
-
+            #print(inp.size())
             # Run one step.
             dec_out, attn = self.model.decoder(inp, memory_bank,
                                                memory_lengths=memory_lengths,
@@ -823,11 +847,14 @@ class Translator(object):
 
             # (b) Compute a vector of batch x beam word scores.
             if not self.copy_attn:
+                #print("aa")
                 out = self.model.generator.forward(dec_out).data
                 out = unbottle(out)
                 # beam x tgt_vocab
+
                 beam_attn = unbottle(attn["std"])
             else:
+                #print("bb")
                 out = self.model.generator.forward(dec_out,
                                                    attn["copy"].squeeze(0),
                                                    src_map)
